@@ -1,0 +1,101 @@
+name: FlameWill download artifact
+description: actions/download-artifact with the same inputs. On a FlameWill runner it reads what FlameWill/upload-artifact kept in this run; everything else is actions/download-artifact.
+author: FlameWill
+branding:
+  icon: download-cloud
+  color: orange
+
+# Every input is actions/download-artifact's (v8, the latest; v4's are the same less artifact-ids, skip-decompress, digest-mismatch),
+# with the same default. On a FlameWill runner an artifact named in this run is read from
+# FlameWill (fw-artifact: the newest run attempt that kept it) into path. GitHub's own action reads it instead when the job is not on a
+# FlameWill runner, when no name is given (all artifacts), when artifact ids, a pattern, another repository or another run, or the zip
+# itself (skip-decompress) is asked for, or when
+# FlameWill does not keep that name in this run (an artifact GitHub kept): the step says which.
+inputs:
+  name:
+    description: Name of the artifact to download. If unspecified, all artifacts for the run are downloaded (from GitHub).
+    required: false
+  artifact-ids:
+    description: IDs of the artifacts to download, comma-separated (from GitHub). Either artifact-ids or name, not both.
+    required: false
+  path:
+    description: Destination path. Supports basic tilde expansion.
+    default: ${{ github.workspace }}
+  pattern:
+    description: A glob pattern matching the artifacts to download (from GitHub). Ignored if name is specified.
+    required: false
+  merge-multiple:
+    description: When several artifacts match, whether they are extracted into the same directory (from GitHub).
+    default: 'false'
+  github-token:
+    description: The GitHub token used to authenticate with the GitHub API (another repository or run).
+    default: ${{ github.token }}
+  repository:
+    description: The repository owner and the repository name joined together by "/".
+    default: ${{ github.repository }}
+  run-id:
+    description: The id of the workflow run where the desired download target was uploaded.
+    default: ${{ github.run_id }}
+  skip-decompress:
+    description: If true, the artifact is kept as downloaded, not extracted (from GitHub).
+    default: 'false'
+  digest-mismatch:
+    description: 'The behavior when a downloaded artifact''s digest does not match: ignore, info, warn or error. FlameWill checks every artifact it keeps and never unpacks one that does not match.'
+    default: error
+
+outputs:
+  download-path:
+    description: Path of the artifact download.
+    value: ${{ steps.flamewill.outputs.path || steps.github.outputs.download-path }}
+  kept-by:
+    description: Who the artifact was read from - flamewill or github.
+    value: ${{ steps.flamewill.outputs.read == 'true' && 'flamewill' || 'github' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the artifact from FlameWill
+      id: flamewill
+      shell: bash
+      env:
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_PATTERN: ${{ inputs.pattern }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_ARTIFACT_IDS: ${{ inputs.artifact-ids }}
+        INPUT_SKIP_DECOMPRESS: ${{ inputs.skip-decompress }}
+      run: |
+        set -uo pipefail
+        github() { echo "FlameWill download artifact: $1, so it is read from GitHub (actions/download-artifact)"; echo "read=false" >> "$GITHUB_OUTPUT"; exit 0; }
+        command -v fw-artifact >/dev/null 2>&1 || github "not a FlameWill runner"
+        [ -z "$INPUT_ARTIFACT_IDS" ] || github "artifact ids"
+        [ -n "$INPUT_NAME" ] || github "no name (every artifact of the run)"
+        [ "$(printf %s "$INPUT_SKIP_DECOMPRESS" | tr "[:upper:]" "[:lower:]")" != true ] || github "skip-decompress is true"
+        [ -z "$INPUT_PATTERN" ] || [ -n "$INPUT_NAME" ] || github "a pattern"
+        [ "$INPUT_REPOSITORY" = "$GITHUB_REPOSITORY" ] || github "another repository"
+        [ "$INPUT_RUN_ID" = "$GITHUB_RUN_ID" ] || github "another run"
+        dir=$INPUT_PATH
+        case "$dir" in "~") dir=$HOME ;; "~/"*) dir="$HOME/${dir#\~/}" ;; esac
+        if fw-artifact download "$INPUT_NAME" "$dir"; then
+          echo "read=true" >> "$GITHUB_OUTPUT"
+          echo "path=$(cd "$dir" && pwd)" >> "$GITHUB_OUTPUT"
+        else
+          github "FlameWill does not keep $INPUT_NAME in this run (the line above says why)"
+        fi
+
+    - name: Download the artifact from GitHub
+      id: github
+      if: steps.flamewill.outputs.read == 'false'
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.name }}
+        artifact-ids: ${{ inputs.artifact-ids }}
+        path: ${{ inputs.path }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+        github-token: ${{ inputs.github-token }}
+        repository: ${{ inputs.repository }}
+        run-id: ${{ inputs.run-id }}
+        skip-decompress: ${{ inputs.skip-decompress }}
+        digest-mismatch: ${{ inputs.digest-mismatch }}
